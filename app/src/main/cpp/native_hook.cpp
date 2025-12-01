@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "dobby.h"
+#include "utils/db.h"
 #include "utils/utils.h"
 
 #define LOG_TAG "[TextExtractTool]"
@@ -340,6 +341,7 @@ void setter_pre_handler(void* address, DobbyRegisterContext* ctx) {
             LOGI("[Setter] RVA 0x%" PRIxPTR " 过滤：#%s#", rva, original.c_str());
         } else {
             LOGI("[Setter] RVA 0x%" PRIxPTR " %s", rva, original.c_str());
+            textdb::InsertIfNeeded(original);
         }
     }
 
@@ -468,6 +470,8 @@ void update_rvas(const std::vector<uintptr_t>& newRvas) {
 }
 
 void init_worker() {
+    textdb::Init(g_process_name, true);
+
     g_il2cpp_base = wait_for_module(kLibIl2cpp, std::chrono::seconds(10));
     if (g_il2cpp_base == 0) {
         LOGI("[%s] 等待 %s 载入超时，当前进程可能未使用 Unity/il2cpp", g_process_name.c_str(), kLibIl2cpp);
