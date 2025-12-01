@@ -9,6 +9,7 @@ add_library(
         native_hook
         SHARED
         native_hook.cpp
+        utils/utils.cpp
 )
 
 target_include_directories(

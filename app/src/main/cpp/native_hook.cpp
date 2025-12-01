@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "dobby.h"
+#include "utils/utils.h"
 
 #define LOG_TAG "[TextExtractTool]"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -23,7 +24,7 @@
 namespace {
 
 constexpr const char* kLibIl2cpp = "libil2cpp.so";
-constexpr const char* kTargetText = "Hook Test";
+//constexpr const char* kTargetText = "Hook Test";
 
 struct Il2CppString {
     void* klass;
@@ -333,26 +334,29 @@ void setter_pre_handler(void* address, DobbyRegisterContext* ctx) {
     void* arg = get_second_arg(ctx);
     const auto original = describe_il2cpp_string(reinterpret_cast<Il2CppString*>(arg));
 
-    if (!original.empty() && original != kTargetText) {
-        LOGI("[Setter] RVA 0x%" PRIxPTR " 原始内容: %s", rva, original.c_str());
+    if (!original.empty()) {
+        const bool filtered = textutils::ShouldFilter(original);
+        if (filtered) {
+            LOGI("[Setter] RVA 0x%" PRIxPTR " 过滤：#%s#", rva, original.c_str());
+        } else {
+            LOGI("[Setter] RVA 0x%" PRIxPTR " %s", rva, original.c_str());
+        }
     }
 
-    if (!g_stringNew) {
-        return;
-    }
-
-    Il2CppString* newStr = nullptr;
-    try {
-        newStr = g_stringNew(kTargetText);
-    } catch (...) {
-        LOGE("g_stringNew call failed");
-    }
-
-    if (newStr == nullptr) {
-        return;
-    }
-
-    set_second_arg(ctx, newStr);
+    // 之前会调用 il2cpp_string_new 构造新字符串并替换第二参数，现仅保留原文日志。
+    // if (!g_stringNew) {
+    //     return;
+    // }
+    // Il2CppString* newStr = nullptr;
+    // try {
+    //     newStr = g_stringNew(kTargetText);
+    // } catch (...) {
+    //     LOGE("g_stringNew call failed");
+    // }
+    // if (newStr == nullptr) {
+    //     return;
+    // }
+    // set_second_arg(ctx, newStr);
 }
 
 void* open_il2cpp_handle() {
