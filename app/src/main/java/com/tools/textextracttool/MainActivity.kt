@@ -23,6 +23,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -46,6 +47,10 @@ import androidx.compose.ui.unit.dp
 import com.tools.textextracttool.config.HookConfigStore
 import com.tools.textextracttool.ui.theme.TextExtractToolTheme
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.BufferedReader
+import java.io.InputStreamReader
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -65,24 +70,35 @@ fun HookConfigScreen() {
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
     val rvaList = remember { mutableStateListOf<String>() }
+    val maxRvaCount = 20
     val defaultRvas = listOf("0x1d236e8")
     val snackbarHostState = remember { SnackbarHostState() }
     val savedCount = remember { mutableStateOf(0) }
     var dumpModeEnabled by remember { mutableStateOf(false) }
+    var isLoading by remember { mutableStateOf(false) }
     val filePickerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
         scope.launch {
             if (uri != null) {
-                snackbarHostState.showSnackbar("已选择文件：$uri（解析逻辑 TODO）")
-                // TODO: 处理所选文件内容
+                isLoading = true
+                try {
+                    val added = loadRvasFromCs(context, uri, maxRvaCount)
+                    if (added.isNotEmpty()) {
+                        rvaList.clear()
+                        rvaList.addAll(added)
+                        snackbarHostState.showSnackbar("解析到 ${added.size} 条 RVA")
+                    } else {
+                        snackbarHostState.showSnackbar("未在文件中找到 set_Text 的 RVA")
+                    }
+                } finally {
+                    isLoading = false
+                }
             } else {
                 snackbarHostState.showSnackbar("未选择文件")
             }
         }
     }
-    val maxRvaCount = 20
-
     LaunchedEffect(Unit) {
         val saved = HookConfigStore.loadRvasForApp(context)
         dumpModeEnabled = HookConfigStore.loadDumpModeForApp(context)
@@ -136,6 +152,9 @@ fun HookConfigScreen() {
                         }
                     }
                 )
+            }
+            if (isLoading) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
             OutlinedButton(
                 onClick = { filePickerLauncher.launch(arrayOf("*/*")) },
@@ -218,6 +237,34 @@ fun HookConfigScreen() {
 
 private fun formatRva(value: Long): String {
     return "0x" + value.toString(16)
+}
+
+private suspend fun loadRvasFromCs(
+    context: android.content.Context,
+    uri: android.net.Uri,
+    maxCount: Int
+): List<String> = withContext(Dispatchers.IO) {
+    val setTextPattern = Regex("""set_Text\s*\(""", RegexOption.IGNORE_CASE)
+    val rvaPattern = Regex("""RVA:\s*(0x[0-9a-fA-F]+|\d+)""")
+    val resolver = context.contentResolver
+    val input = resolver.openInputStream(uri) ?: return@withContext emptyList<String>()
+    input.use { stream ->
+        BufferedReader(InputStreamReader(stream)).use { reader ->
+            val lines = reader.readLines()
+            val results = LinkedHashSet<String>()
+            for (i in 0 until lines.size - 1) {
+                val comment = lines[i]
+                val next = lines[i + 1]
+                if (!setTextPattern.containsMatchIn(next)) continue
+                val match = rvaPattern.find(comment) ?: continue
+                val raw = match.groupValues.getOrNull(1) ?: continue
+                val parsed = parseRva(raw) ?: continue
+                results.add(formatRva(parsed))
+                if (results.size >= maxCount) break
+            }
+            return@withContext results.toList()
+        }
+    }
 }
 
 private suspend fun persistRvas(
