@@ -48,6 +48,7 @@ class MainHook: IXposedHookLoadPackage {
                         XposedBridge.log("$TAG Application.attach -> ctx is null, skip init")
                         return
                     }
+                    NativeBridge.setContext(ctx)
                     XposedBridge.log("$TAG Application.attach -> ctx=$ctx")
 
                     // 提示：LSPosed 勾选多个 App 可能导致互相覆盖

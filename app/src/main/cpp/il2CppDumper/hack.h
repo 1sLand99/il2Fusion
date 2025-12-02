@@ -8,6 +8,7 @@
 #include <cstddef>
 
 // data/length 参数保留兼容签名，当前实现不再使用跨 ABI arm so 注入。
-void hack_prepare(const char *game_data_dir, void *data, size_t length);
+// 返回是否成功触发 dump（找到 libil2cpp 并完成 dump 逻辑）。
+bool hack_prepare(const char *game_data_dir, void *data, size_t length);
 
 #endif //ZYGISK_IL2CPPDUMPER_HACK_H

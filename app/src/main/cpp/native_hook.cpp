@@ -38,6 +38,30 @@ std::string g_process_name = "unknown";
 std::atomic_bool g_dump_enabled{false};
 std::atomic_bool g_dump_started{false};
 std::string g_dump_dir;
+JavaVM* g_vm = nullptr;
+jclass g_bridge_class = nullptr;
+jmethodID g_on_dump_finished = nullptr;
+
+void NotifyDumpResult(bool success, const char* msg) {
+    if (g_vm == nullptr || g_bridge_class == nullptr || g_on_dump_finished == nullptr) {
+        return;
+    }
+    JNIEnv* env = nullptr;
+    bool attached = false;
+    if (g_vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        if (g_vm->AttachCurrentThread(&env, nullptr) != JNI_OK) {
+            return;
+        }
+        attached = true;
+    }
+    jstring jmsg = env->NewStringUTF(msg ? msg : "");
+    env->CallStaticVoidMethod(g_bridge_class, g_on_dump_finished,
+                              success ? JNI_TRUE : JNI_FALSE, jmsg);
+    env->DeleteLocalRef(jmsg);
+    if (attached) {
+        g_vm->DetachCurrentThread();
+    }
+}
 
 void trigger_dump_async() {
     if (!g_dump_enabled.load()) {
@@ -56,10 +80,17 @@ void trigger_dump_async() {
         if (base == 0) {
             LOGE("dump wait libil2cpp timeout");
             g_dump_started.store(false);
+            NotifyDumpResult(false, "等待 libil2cpp 超时");
             return;
         }
         LOGI("dump begin, libil2cpp @ 0x%" PRIxPTR, base);
-        hack_prepare(g_dump_dir.c_str(), nullptr, 0);
+        const bool ok = hack_prepare(g_dump_dir.c_str(), nullptr, 0);
+        g_dump_started.store(false);
+        if (ok) {
+            NotifyDumpResult(true, "Dump 完成");
+        } else {
+            NotifyDumpResult(false, "Dump 失败，未找到 libil2cpp");
+        }
     }).detach();
 }
 
@@ -291,6 +322,19 @@ Java_com_tools_module_NativeBridge_startDump(JNIEnv* env, jclass /*clazz*/, jstr
 
 jint JNI_OnLoad(JavaVM* vm, void*) {
     LOGI("JNI_OnLoad");
-    (void) vm;
+    g_vm = vm;
+    JNIEnv* env = nullptr;
+    if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        return JNI_VERSION_1_6;
+    }
+    jclass cls = env->FindClass("com/tools/module/NativeBridge");
+    if (cls != nullptr) {
+        g_bridge_class = static_cast<jclass>(env->NewGlobalRef(cls));
+        env->DeleteLocalRef(cls);
+        g_on_dump_finished = env->GetStaticMethodID(
+                g_bridge_class,
+                "onDumpFinished",
+                "(ZLjava/lang/String;)V");
+    }
     return JNI_VERSION_1_6;
 }
