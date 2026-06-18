@@ -1,6 +1,6 @@
 name=il2Fusion Module
-version=1
-versionCode=1
+version=0.0.5
+versionCode=5
 author=PenguinAndy
 description=Reverse tools for Android Unity game
 minApi=21

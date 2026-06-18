@@ -68,7 +68,7 @@ sequenceDiagram
 
 ## 环境要求
 - 已 Root 的设备，并具备 Magisk + LSPosed 环境。
-- Android 12+（`minSdk 31`、`targetSdk 35`、`compileSdk 36`）。
+- Android 9+（`minSdk 28`、`targetSdk 35`、`compileSdk 36`）。
 - 默认 ABI：`arm64-v8a`。
   如需支持更多 ABI，请补充 `app/src/main/cpp/libs/<abi>/libdobby.a` 并更新 `ndk.abiFilters`。
 - 已验证设备：Google Pixel 3 XL，Android 12（`SP1A.210812.016.C2 / 8618562`）。

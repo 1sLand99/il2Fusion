@@ -18,7 +18,7 @@ android {
 
     defaultConfig {
         applicationId = "com.tools.il2fusion"
-        minSdk = 31
+        minSdk = 28
         targetSdk = 35
         versionCode = il2fusionVersionCode
         versionName = il2fusionVersionName

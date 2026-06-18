@@ -50,6 +50,9 @@ std::atomic_bool g_api_initialized{false};
 std::atomic_bool g_dobby_mode_configured{false};
 std::atomic<uintptr_t> g_il2cpp_base{0};
 il2cpputils::Il2CppApi g_api{};
+std::mutex g_text_replacement_mutex;
+bool g_text_replacement_enabled = false;
+std::string g_text_replacement_value;
 
 bool EnsureIl2cppApi() {
     if (g_api_initialized.load()) {
@@ -167,6 +170,9 @@ bool TryApplyTranslation(const HookedMethod& method,
     if (value == nullptr || *value == nullptr || IsInvalidManagedText(original)) {
         return false;
     }
+    if (textutils::ShouldFilter(original)) {
+        return false;
+    }
     if (g_api.string_new == nullptr) {
         return false;
     }
@@ -192,12 +198,56 @@ bool TryApplyTranslation(const HookedMethod& method,
     return true;
 }
 
+bool GetForcedReplacement(std::string* out) {
+    if (out == nullptr) {
+        return false;
+    }
+    std::lock_guard<std::mutex> _lk(g_text_replacement_mutex);
+    if (!g_text_replacement_enabled || g_text_replacement_value.empty()) {
+        return false;
+    }
+    *out = g_text_replacement_value;
+    return true;
+}
+
+bool TryApplyForcedReplacement(const HookedMethod& method,
+                               const std::string& original,
+                               textutils::Il2CppString** value) {
+    if (value == nullptr || *value == nullptr || IsInvalidManagedText(original)) {
+        return false;
+    }
+    if (g_api.string_new == nullptr) {
+        return false;
+    }
+    if (textutils::ShouldFilter(original)) {
+        return false;
+    }
+    std::string replacement_text;
+    if (!GetForcedReplacement(&replacement_text)) {
+        return false;
+    }
+    auto* replacement = reinterpret_cast<textutils::Il2CppString*>(
+        g_api.string_new(replacement_text.c_str()));
+    if (replacement == nullptr) {
+        LOGE("构造测试替换字符串失败：%s", method.full.c_str());
+        return false;
+    }
+    LOGI("[Setter] %s 测试替换：#%s# -> #%s#",
+         method.full.c_str(),
+         original.c_str(),
+         replacement_text.c_str());
+    *value = replacement;
+    return true;
+}
+
 template <size_t Slot>
 void SetterReplacement(void* instance, textutils::Il2CppString* value) {
     HookedMethod& method = g_hook_slots[Slot];
     if (method.active) {
         std::string original = ExtractManagedText(value);
-        TryApplyTranslation(method, original, &value);
+        if (!TryApplyForcedReplacement(method, original, &value)) {
+            TryApplyTranslation(method, original, &value);
+        }
         RecordCapturedText(method, original);
     }
 
@@ -459,7 +509,7 @@ void update_targets_internal(const std::vector<std::string>& new_targets) {
 }
 
 void init_worker() {
-    textdb::Init(g_process_name, true);
+    textdb::Init(g_process_name, true, textdb::ResetOnMainProcess());
 
     const uintptr_t base = hookutils::WaitForModule(kLibIl2cpp, std::chrono::seconds(10));
     if (base == 0) {
@@ -499,6 +549,13 @@ void SetHookBackend(std::int32_t backend_value) {
         }
         hook_backend::SetPreferredBackend(backend);
     }
+}
+
+void SetTextReplacement(bool enabled, const std::string& text) {
+    std::lock_guard<std::mutex> _lk(g_text_replacement_mutex);
+    g_text_replacement_enabled = enabled;
+    g_text_replacement_value = text;
+    LOGI("Unity text replacement enabled=%d length=%zu", enabled ? 1 : 0, text.size());
 }
 
 void UpdateTargetsJson(const std::string& json) {

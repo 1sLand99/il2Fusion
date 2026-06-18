@@ -1,8 +1,11 @@
 package com.tools.module
 
 import android.content.Context
+import com.tools.il2fusion.config.CocosBundledFont
+import com.tools.il2fusion.config.GameEngine
 import com.tools.il2fusion.config.HookFramework
 import com.tools.il2fusion.config.HookConfigStore
+import com.tools.il2fusion.config.RuntimeHookConfig
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
@@ -22,6 +25,31 @@ class MainHook: IXposedHookLoadPackage {
         const val TAG = "[il2Fusion]"
         const val NATIVE_LIB = "native_hook"
         const val MODULE_PKG = "com.tools.il2fusion"
+
+        private fun resolveCocosFontId(config: RuntimeHookConfig): String {
+            if (config.engine != GameEngine.Cocos2dxLua) {
+                return ""
+            }
+            if (config.cocosFontId.isNotBlank()) {
+                return config.cocosFontId
+            }
+            return if (
+                config.textReplacementEnabled &&
+                containsThaiCodePoint(config.textReplacementValue)
+            ) {
+                CocosBundledFont.NotoSansThai.id
+            } else {
+                ""
+            }
+        }
+
+        private fun containsThaiCodePoint(value: String): Boolean {
+            return value.any { it.code in 0x0E00..0x0E7F }
+        }
+
+        private fun isMainProcess(packageName: String, processName: String): Boolean {
+            return processName.isBlank() || processName == packageName
+        }
     }
 
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -30,7 +58,7 @@ class MainHook: IXposedHookLoadPackage {
 
         XposedBridge.log("$TAG Inject to: ${lpparam.packageName}")
 
-        val  cl = lpparam.classLoader
+        val cl = lpparam.classLoader
 
         // Hook Application.attach(Context)
         XposedHelpers.findAndHookMethod(
@@ -49,16 +77,6 @@ class MainHook: IXposedHookLoadPackage {
                     NativeBridge.setContext(ctx)
                     XposedBridge.log("$TAG Application.attach -> ctx=$ctx")
 
-                    // 提示：LSPosed 勾选多个 App 可能导致互相覆盖
-                    try {
-                        val enabledApps = HookConfigStore.markHookedPackage(ctx, lpparam.packageName)
-                        if (enabledApps.size > 1) {
-                            XposedBridge.log("$TAG Warning: LSPosed 勾选了多个 App，hook 只针对当前进程。建议单次只勾选一个目标包")
-                        }
-                    } catch (e: Throwable) {
-                        XposedBridge.log("$TAG markHookedPackage failed: $e")
-                    }
-
                     // Load native so
                     try {
                         System.loadLibrary(NATIVE_LIB)
@@ -76,6 +94,12 @@ class MainHook: IXposedHookLoadPackage {
                     }
 
                     try {
+                        TextDbExportBridge.start(ctx, lpparam.packageName, lpparam.processName)
+                    } catch (e: Throwable) {
+                        XposedBridge.log("$TAG TextDbExportBridge start failed: $e")
+                    }
+
+                    try {
                         val hookFramework = HookConfigStore.loadHookFrameworkForHook(ctx)
                         val frameworkValue = when (hookFramework) {
                             HookFramework.And64InlineHook -> 0
@@ -85,6 +109,102 @@ class MainHook: IXposedHookLoadPackage {
                         XposedBridge.log("$TAG setHookFramework -> ${hookFramework.storageValue}")
                     } catch (e: Throwable) {
                         XposedBridge.log("$TAG setHookFramework failed: $e")
+                    }
+
+                    val runtimeConfig = try {
+                        val config = HookConfigStore.loadRuntimeConfigForHook(ctx)
+                        if (config.engine == GameEngine.Cocos2dxLua &&
+                            !isMainProcess(lpparam.packageName, lpparam.processName)
+                        ) {
+                            NativeBridge.setGameEngine(config.engine.nativeValue)
+                            XposedBridge.log(
+                                "$TAG Cocos runtime skipped for non-main process " +
+                                    "${lpparam.packageName}/${lpparam.processName}"
+                            )
+                            return
+                        }
+                        NativeBridge.setGameEngine(config.engine.nativeValue)
+                        NativeBridge.setTextReplacement(config.textReplacementEnabled, config.textReplacementValue)
+                        NativeBridge.setTextDbResetOnStart(config.textDbResetOnStart)
+                        NativeBridge.setCocosTextCaptureEnabled(config.cocosTextCaptureEnabled)
+                        NativeBridge.setCocosTextPersistence(
+                            config.cocosTextPersistEnabled,
+                            config.cocosTextPersistChineseOnly
+                        )
+                        NativeBridge.setCocosTextReplacementDelay(
+                            config.cocosTextReplacementDelayEnabled,
+                            config.cocosTextReplacementDelayMs
+                        )
+                        NativeBridge.setCocosBurstDelayGuard(
+                            config.cocosTypewriterOptimizationEnabled,
+                            config.cocosTypewriterIdleFinalizeMs
+                        )
+                        val resolvedCocosFontId = resolveCocosFontId(config)
+                        val resolvedCocosFont = if (resolvedCocosFontId.isNotBlank()) {
+                            CocosFontAssetInstaller.installSelectedFont(
+                                ctx,
+                                resolvedCocosFontId
+                            )
+                        } else {
+                            CocosFontAssetInstaller.InstalledFont()
+                        }
+                        NativeBridge.setCocosFontReplacement(
+                            resolvedCocosFont.ttfPath.isNotBlank() ||
+                                resolvedCocosFont.bmfontFntPath.isNotBlank(),
+                            resolvedCocosFont.ttfPath,
+                            resolvedCocosFont.bmfontFntPath
+                        )
+                        val rules = config.cocosLuaReplacementRules
+                        val cocosFontSource = when {
+                            resolvedCocosFontId.isBlank() -> "none"
+                            config.cocosFontId.isBlank() -> "auto"
+                            else -> "selected"
+                        }
+                        NativeBridge.setCocosLuaReplacementRules(
+                            BooleanArray(rules.size) { index -> rules[index].enabled },
+                            Array(rules.size) { index -> rules[index].scriptName },
+                            Array(rules.size) { index -> rules[index].replacedCode },
+                            Array(rules.size) { index -> rules[index].replaceCode },
+                            Array(rules.size) { index -> rules[index].prependCode }
+                        )
+                        NativeBridge.startCocosRuntimeIfNeeded()
+                        XposedBridge.log(
+                            "$TAG runtime config -> engine=${config.engine.storageValue}, " +
+                                "replace=${config.textReplacementEnabled}, " +
+                                "replaceLength=${config.textReplacementValue.length}, " +
+                                "textDbReset=${config.textDbResetOnStart}, " +
+                                "cocosText=${config.cocosTextCaptureEnabled}, " +
+                                "cocosTextPersist=${config.cocosTextPersistEnabled}, " +
+                                "cocosTextChineseOnly=${config.cocosTextPersistChineseOnly}, " +
+                                "cocosReplaceDelay=${config.cocosTextReplacementDelayEnabled}, " +
+                                "cocosReplaceDelayMs=${config.cocosTextReplacementDelayMs}, " +
+                                "cocosBurstDelayGuard=${config.cocosTypewriterOptimizationEnabled}, " +
+                                "cocosBurstHoldMs=${config.cocosTypewriterIdleFinalizeMs}, " +
+                                "cocosFontReplace=${resolvedCocosFont.ttfPath.isNotBlank() || resolvedCocosFont.bmfontFntPath.isNotBlank()}, " +
+                                "cocosFontTtfLength=${resolvedCocosFont.ttfPath.length}, " +
+                                "cocosFontBmFntLength=${resolvedCocosFont.bmfontFntPath.length}, " +
+                                "cocosFont=${resolvedCocosFontId.ifBlank { "none" }}, " +
+                                "cocosFontSource=$cocosFontSource, " +
+                                "luaRules=${config.cocosLuaReplacementRules.size}"
+                        )
+                        TargetSessionBridge.start(
+                            ctx = ctx,
+                            packageName = lpparam.packageName,
+                            processName = lpparam.processName.ifBlank { lpparam.packageName },
+                            engine = config.engine
+                        )
+                        config
+                    } catch (e: Throwable) {
+                        XposedBridge.log("$TAG apply runtime config failed: $e")
+                        return
+                    }
+
+                    if (runtimeConfig.engine != GameEngine.UnityIl2Cpp) {
+                        XposedBridge.log(
+                            "$TAG runtime config active -> ${runtimeConfig.engine.storageValue}, " +
+                                "skip Unity target setup"
+                        )
+                        return
                     }
 
                     try {
