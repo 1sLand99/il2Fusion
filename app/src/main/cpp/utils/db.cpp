@@ -1,6 +1,7 @@
 #include "db.h"
 
 #include <atomic>
+#include <limits>
 #include <mutex>
 #include "sqlite3.h"
 #include <string>
@@ -15,6 +16,7 @@ std::string g_db_path;
 sqlite3* g_db = nullptr;
 std::mutex g_db_mutex;
 std::atomic_bool g_db_logged{false};
+std::atomic_bool g_reset_on_main_process{false};
 std::string g_process_name;
 
 std::string BuildDbPath(const std::string& process_name) {
@@ -27,6 +29,33 @@ std::string BuildDbPath(const std::string& process_name) {
         pkg = "unknown";
     }
     return "/data/data/" + pkg + "/text.db";
+}
+
+bool IsMainProcessName(const std::string& process_name) {
+    return !process_name.empty() && process_name.find(':') == std::string::npos;
+}
+
+void DeleteFileIfExistsLocked(const std::string& path) {
+    if (path.empty() || access(path.c_str(), F_OK) != 0) {
+        return;
+    }
+    if (unlink(path.c_str()) == 0) {
+        LOGI("已删除旧数据库文件: %s", path.c_str());
+    } else {
+        LOGE("删除旧数据库文件失败: %s", path.c_str());
+    }
+}
+
+void ResetDatabaseFilesLocked() {
+    if (g_db != nullptr) {
+        sqlite3_close(g_db);
+        g_db = nullptr;
+    }
+    DeleteFileIfExistsLocked(g_db_path);
+    DeleteFileIfExistsLocked(g_db_path + "-journal");
+    DeleteFileIfExistsLocked(g_db_path + "-wal");
+    DeleteFileIfExistsLocked(g_db_path + "-shm");
+    g_db_logged.store(false);
 }
 
 bool EnsureDatabaseLocked(bool log_path) {
@@ -68,12 +97,15 @@ bool EnsureDatabaseLocked(bool log_path) {
 }
 
 bool TextExistsLocked(const std::string& text) {
+    if (text.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        return false;
+    }
     const char* sql = "SELECT 1 FROM text_log WHERE txt = ? LIMIT 1;";
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
         return false;
     }
-    sqlite3_bind_text(stmt, 1, text.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 1, text.c_str(), static_cast<int>(text.size()), SQLITE_TRANSIENT);
     const int rc = sqlite3_step(stmt);
     const bool exists = (rc == SQLITE_ROW);
     sqlite3_finalize(stmt);
@@ -82,16 +114,32 @@ bool TextExistsLocked(const std::string& text) {
 
 }  // namespace
 
-void Init(const std::string& process_name, bool log_path) {
+void Init(const std::string& process_name, bool log_path, bool reset_on_main_process) {
     std::lock_guard<std::mutex> _lk(g_db_mutex);
     g_process_name = process_name;
     g_db_path = BuildDbPath(process_name);
+    if (reset_on_main_process && IsMainProcessName(process_name)) {
+        ResetDatabaseFilesLocked();
+    }
     EnsureDatabaseLocked(log_path);
+}
+
+void SetResetOnMainProcess(bool enabled) {
+    g_reset_on_main_process.store(enabled);
+    LOGI("text.db 启动清库=%d", enabled ? 1 : 0);
+}
+
+bool ResetOnMainProcess() {
+    return g_reset_on_main_process.load();
 }
 
 void InsertIfNeeded(const std::string& text) {
     if (text.empty()) {
         LOGI("跳过插入：文本为空");
+        return;
+    }
+    if (text.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        LOGI("跳过插入：文本过长");
         return;
     }
 
@@ -115,7 +163,7 @@ void InsertIfNeeded(const std::string& text) {
         LOGE("插入预编译失败");
         return;
     }
-    sqlite3_bind_text(stmt, 1, text.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 1, text.c_str(), static_cast<int>(text.size()), SQLITE_TRANSIENT);
     const int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
     if (rc == SQLITE_DONE) {

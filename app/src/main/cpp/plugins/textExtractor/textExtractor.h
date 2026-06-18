@@ -13,6 +13,9 @@ void Init(const std::string& process_name);
 // 设置当前 hook backend；默认 And64InlineHook，1 表示 Dobby。
 void SetHookBackend(std::int32_t backend_value);
 
+// 开启后将捕获到的 Unity set_text 入参替换为固定文本。
+void SetTextReplacement(bool enabled, const std::string& text);
+
 // 更新 JSON 配置；优先用于 Unity 的 RVA/translation 配置。
 void UpdateTargetsJson(const std::string& json);
 
